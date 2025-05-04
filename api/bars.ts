@@ -1,6 +1,5 @@
 // api/bars.ts
-
-export interface Bar {
+export type Bar = {
     id: number;
     name: string;
     latitude: number;
@@ -8,22 +7,20 @@ export interface Bar {
     openingHours: string;
     beerPrice: string;
     photoUrl?: string;
-  }
-  
-  const barCache: { [key: string]: Bar[] } = {}; // Cache for bars data
+  };
   
   export async function fetchBarsFromOverpass(
     latitude: number,
     longitude: number,
     latitudeDelta: number,
-    longitudeDelta: number
+    longitudeDelta: number,
+    signal?: AbortSignal
   ): Promise<Bar[]> {
-    const cacheKey = `${latitude},${longitude},${latitudeDelta},${longitudeDelta}`;
-    
-    // Check if data is already cached
-    if (barCache[cacheKey]) {
-      console.log("Returning cached bars...");
-      return barCache[cacheKey];
+    // Ignore overly zoomed-out regions
+    const MAX_DELTA = 0.1;
+    if (latitudeDelta > MAX_DELTA || longitudeDelta > MAX_DELTA) {
+      console.warn('Zoom level too low — skipping fetch.');
+      return [];
     }
   
     const query = `
@@ -38,46 +35,36 @@ export interface Bar {
   
     const url = 'https://overpass-api.de/api/interpreter';
   
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
-  
     try {
       const response = await fetch(url, {
         method: 'POST',
         body: query,
-        signal: controller.signal,
+        signal,
       });
   
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(`HTTP error! Status: ${response.status}`);
       }
   
       const json = await response.json();
   
-      const bars = json.elements
+      return json.elements
         .filter((el: any) => el.lat && el.lon)
         .map((el: any) => ({
           id: el.id,
-          name: el.tags.name || 'Unnamed Bar',
+          name: el.tags?.name || 'Unnamed Bar',
           latitude: el.lat,
           longitude: el.lon,
-          openingHours: el.tags.opening_hours || 'Unknown',
-          beerPrice: el.tags['drink:beer'] || 'Unknown',
+          openingHours: el.tags?.opening_hours || 'Unknown',
+          beerPrice: el.tags?.['drink:beer'] || 'Unknown',
         }));
-  
-      // Cache the fetched bars data
-      barCache[cacheKey] = bars;
-  
-      return bars;
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        console.error('Request timed out');
+        console.log('Fetch aborted.');
       } else {
         console.error('Error fetching bars:', error.message);
       }
-      return []; // Return empty list to avoid crash
-    } finally {
-      clearTimeout(timeout);
+      return [];
     }
   }
   

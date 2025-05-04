@@ -1,10 +1,15 @@
 // screens/BarMapScreen.tsx
-
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, Text } from 'react-native';
-import MapView, { Marker, Region } from 'react-native-maps';  // Import the Region type
+import React, { useState, useRef, useEffect } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import MapView, { Marker, Region } from 'react-native-maps';
 import { fetchBarsFromOverpass, Bar } from '../api/bars';
-import debounce from 'lodash/debounce';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useNavigation } from '@react-navigation/native';
+import { AppStackParamList } from '../navigation/AppNavigator';
+
+type NavProp = NativeStackNavigationProp<AppStackParamList, 'Map'>;
+
+const ZOOM_THRESHOLD = 0.1;
 
 export default function BarMapScreen() {
   const [bars, setBars] = useState<Bar[]>([]);
@@ -14,71 +19,114 @@ export default function BarMapScreen() {
     latitudeDelta: 0.07,
     longitudeDelta: 0.07,
   });
-  const [error, setError] = useState<string | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(0);
+  const [selected, setSelected] = useState<Bar | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
 
-  // Debounced function to load bars based on region
-  const debouncedLoad = useMemo(() => debounce(async (region: Region) => {
-    try {
-      const data = await fetchBarsFromOverpass(
-        region.latitude,
-        region.longitude,
-        region.latitudeDelta,
-        region.longitudeDelta
-      );
-      setBars(data);
-    } catch (err) {
-      setError("Error fetching bars. Please try again.");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const navigation = useNavigation<NavProp>();
+
+  const handleRegionChange = (newRegion: Region) => {
+    setRegion(newRegion);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (newRegion.latitudeDelta >= ZOOM_THRESHOLD || newRegion.longitudeDelta > ZOOM_THRESHOLD) {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        if (bars.length) setBars([]); // ✅ This clears pins when zoomed out
+        setSelected(null);
+        setShowDetails(false);
+        return;
     }
-  }, 300), []);
 
-  // Update zoom level and region on map interaction
-  const onRegionChangeComplete = (region: Region) => {  // Type the region here
-    setZoomLevel(region.latitudeDelta);
-    setRegion(region);
+    debounceRef.current = setTimeout(() => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      fetchBarsFromOverpass(
+        newRegion.latitude,
+        newRegion.longitude,
+        newRegion.latitudeDelta,
+        newRegion.longitudeDelta,
+        controller.signal
+      )
+        .then((data) => setBars(data))
+        .catch((err) => {
+          if (err.name !== 'AbortError') console.warn(err);
+        });
+    }, 300);
   };
 
-  // Filter bars based on zoom level
-  const filteredBars = bars.filter(bar => zoomLevel < 0.05); // Adjust the zoom threshold
-
   useEffect(() => {
-    debouncedLoad(region); // Trigger the debounced function when the region changes
-
     return () => {
-      debouncedLoad.cancel(); // Cleanup the debounced function
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      abortRef.current?.abort();
     };
-  }, [region, debouncedLoad]);
+  }, []);
+
+  const onMarkerPress = (bar: Bar) => {
+    if (selected?.id === bar.id) {
+      setShowDetails(true);
+    } else {
+      setSelected(bar);
+      setShowDetails(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
-      {error && <Text style={styles.errorText}>{error}</Text>}
       <MapView
-        style={StyleSheet.absoluteFillObject}
-        region={region}
-        onRegionChangeComplete={onRegionChangeComplete}
+        style={styles.map}
+        initialRegion={region}
+        onRegionChangeComplete={handleRegionChange}
+        minZoomLevel={12} // prevent excessive zoom out
       >
-        {filteredBars.map((bar) => (
-          <Marker
-            key={bar.id}
-            coordinate={{ latitude: bar.latitude, longitude: bar.longitude }}
-            title={bar.name}
-          />
-        ))}
+        {region.latitudeDelta <= ZOOM_THRESHOLD &&
+          bars.map((bar) => (
+            <Marker
+                key={bar.id}
+                coordinate={{ latitude: bar.latitude, longitude: bar.longitude }}
+                title={bar.name}
+                onPress={() => onMarkerPress(bar)}
+            />
+          ))}
       </MapView>
+
+      {selected && (
+        <TouchableOpacity
+          style={styles.info}
+          onPress={() => navigation.navigate('Details', { bar: selected })}
+        >
+          <Text style={styles.title}>{selected.name}</Text>
+          {showDetails ? (
+            <>
+              <Text>Horaires : {selected.openingHours}</Text>
+              <Text>Prix bière : {selected.beerPrice}</Text>
+            </>
+          ) : (
+            <Text style={styles.tap}>Appuyez encore pour voir plus</Text>
+          )}
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  errorText: {
-    color: 'red',
+  container: { flex: 1 },
+  map: { ...StyleSheet.absoluteFillObject },
+  info: {
     position: 'absolute',
-    top: 50,
-    left: 20,
-    zIndex: 10,
-    fontSize: 16,
+    bottom: 20,
+    left: 10,
+    right: 10,
+    backgroundColor: 'white',
+    padding: 12,
+    borderRadius: 8,
+    elevation: 3,
   },
+  title: { fontSize: 18, fontWeight: 'bold' },
+  tap: { fontStyle: 'italic', marginTop: 4, color: '#555' },
 });
