@@ -1,56 +1,77 @@
 // screens/BarMapScreen.tsx
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, Button, Text, Image, Alert } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import MapView, { Marker, Region } from 'react-native-maps';
-import debounce from 'lodash/debounce';
 import { fetchBarsFromOverpass, Bar } from '../api/bars';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useNavigation } from '@react-navigation/native';
+import { AppStackParamList } from '../navigation/AppNavigator';
 
-export default function BarMapScreen({ navigation }: any) {
+type NavProp = NativeStackNavigationProp<AppStackParamList, 'Map'>;
+
+const ZOOM_THRESHOLD = 0.1;
+
+export default function BarMapScreen() {
   const [bars, setBars] = useState<Bar[]>([]);
-  const [clickedBar, setClickedBar] = useState<Bar | null>(null);
-  const [isInfoVisible, setIsInfoVisible] = useState(false);
   const [region, setRegion] = useState<Region>({
     latitude: 48.8566,
     longitude: 2.3522,
     latitudeDelta: 0.07,
     longitudeDelta: 0.07,
   });
-  const ZOOM_THRESHOLD = 0.02;
+  const [selected, setSelected] = useState<Bar | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
 
-  // Fetch bars for a given region
-  const loadBars = async (r: Region) => {
-    try {
-      const data = await fetchBarsFromOverpass(
-        r.latitude,
-        r.longitude,
-        r.latitudeDelta,
-        r.longitudeDelta
-      );
-      setBars(data);
-    } catch (err) {
-      console.error(err);
-      Alert.alert('Error', 'Could not load bars. Please try again.');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const navigation = useNavigation<NavProp>();
+
+  const handleRegionChange = (newRegion: Region) => {
+    setRegion(newRegion);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (newRegion.latitudeDelta >= ZOOM_THRESHOLD || newRegion.longitudeDelta > ZOOM_THRESHOLD) {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        if (bars.length) setBars([]); // ✅ This clears pins when zoomed out
+        setSelected(null);
+        setShowDetails(false);
+        return;
     }
+
+    debounceRef.current = setTimeout(() => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      fetchBarsFromOverpass(
+        newRegion.latitude,
+        newRegion.longitude,
+        newRegion.latitudeDelta,
+        newRegion.longitudeDelta,
+        controller.signal
+      )
+        .then((data) => setBars(data))
+        .catch((err) => {
+          if (err.name !== 'AbortError') console.warn(err);
+        });
+    }, 300);
   };
 
-  // Debounce the loadBars call so it only fires after user stops zoom/pan
-  const debouncedLoad = useMemo(
-    () => debounce((r: Region) => loadBars(r), 300),
-    [loadBars]
-  );
-
-  // Initial load
   useEffect(() => {
-    loadBars(region);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      abortRef.current?.abort();
+    };
   }, []);
 
-  // Handle marker press to toggle between name and full info
   const onMarkerPress = (bar: Bar) => {
-    if (clickedBar && clickedBar.id === bar.id) {
-      setIsInfoVisible(true);
+    if (selected?.id === bar.id) {
+      setShowDetails(true);
     } else {
-      setClickedBar(bar);
-      setIsInfoVisible(false);
+      setSelected(bar);
+      setShowDetails(false);
     }
   };
 
@@ -58,61 +79,36 @@ export default function BarMapScreen({ navigation }: any) {
     <View style={styles.container}>
       <MapView
         style={styles.map}
-        region={region}
-        onRegionChangeComplete={(newRegion) => {
-          setRegion(newRegion);
-          if (
-            newRegion.latitudeDelta < ZOOM_THRESHOLD &&
-            newRegion.longitudeDelta < ZOOM_THRESHOLD
-          ) {
-            debouncedLoad(newRegion);
-          } else {
-            setBars([]);
-          }
-        }}
+        initialRegion={region}
+        onRegionChangeComplete={handleRegionChange}
+        minZoomLevel={12} // prevent excessive zoom out
       >
-        {bars.map((bar) => (
-          <Marker
-            key={bar.id}
-            coordinate={{ latitude: bar.latitude, longitude: bar.longitude }}
-            title={bar.name}
-            onPress={() => onMarkerPress(bar)}
-          />
-        ))}
+        {region.latitudeDelta <= ZOOM_THRESHOLD &&
+          bars.map((bar) => (
+            <Marker
+                key={bar.id}
+                coordinate={{ latitude: bar.latitude, longitude: bar.longitude }}
+                title={bar.name}
+                onPress={() => onMarkerPress(bar)}
+            />
+          ))}
       </MapView>
 
-      {clickedBar && (
-        <View style={styles.infoContainer}>
-          <Text style={styles.barName}>{clickedBar.name}</Text>
-          {isInfoVisible ? (
+      {selected && (
+        <TouchableOpacity
+          style={styles.info}
+          onPress={() => navigation.navigate('Details', { bar: selected })}
+        >
+          <Text style={styles.title}>{selected.name}</Text>
+          {showDetails ? (
             <>
-              <Text style={styles.barInfo}>
-                Opening Hours: {clickedBar.openingHours}
-              </Text>
-              <Text style={styles.barInfo}>
-                Beer Price: {clickedBar.beerPrice}
-              </Text>
-              {clickedBar.photoUrl && (
-                <Image
-                  source={{ uri: clickedBar.photoUrl }}
-                  style={styles.barImage}
-                />
-              )}
+              <Text>Horaires : {selected.openingHours}</Text>
+              <Text>Prix bière : {selected.beerPrice}</Text>
             </>
           ) : (
-            <Text style={styles.barInfo}>
-              Tap again to see more information
-            </Text>
+            <Text style={styles.tap}>Appuyez encore pour voir plus</Text>
           )}
-        </View>
-      )}
-
-      <View style={styles.buttonContainer}>
-        <Button title="Refresh Bars" onPress={() => loadBars(region)} />
-      </View>
-
-      {bars.length === 0 && (
-        <Text style={styles.noBarsText}>Zoom in to see bars</Text>
+        </TouchableOpacity>
       )}
     </View>
   );
@@ -121,32 +117,16 @@ export default function BarMapScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { ...StyleSheet.absoluteFillObject },
-  buttonContainer: {
+  info: {
     position: 'absolute',
-    top: 10,
-    left: 10,
-    right: 10,
-    zIndex: 1,
-  },
-  infoContainer: {
-    position: 'absolute',
-    bottom: 80,
+    bottom: 20,
     left: 10,
     right: 10,
     backgroundColor: 'white',
-    padding: 10,
+    padding: 12,
     borderRadius: 8,
-    elevation: 5,
+    elevation: 3,
   },
-  barName: { fontSize: 18, fontWeight: 'bold' },
-  barInfo: { marginTop: 5 },
-  barImage: { width: '100%', height: 120, marginTop: 10, borderRadius: 8 },
-  noBarsText: {
-    position: 'absolute',
-    top: '50%',
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255,255,255,0.8)',
-    padding: 8,
-    borderRadius: 4,
-  },
+  title: { fontSize: 18, fontWeight: 'bold' },
+  tap: { fontStyle: 'italic', marginTop: 4, color: '#555' },
 });

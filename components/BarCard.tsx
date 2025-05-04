@@ -1,38 +1,47 @@
 // components/BarCard.tsx
 import React from 'react';
-import { View, Text, StyleSheet, Image } from 'react-native';
+import { View, Text, Image, StyleSheet } from 'react-native';
 import { Bar } from '../api/bars';
 
 interface BarCardProps {
   bar: Bar;
 }
 
-const BarCard: React.FC<BarCardProps> = ({ bar }) => (
-  <View style={styles.card}>
-    <Text style={styles.name}>{bar.name}</Text>
-    <Text>{bar.openingHours}</Text>
-    <Text>{bar.beerPrice}</Text>
-    {bar.photoUrl && <Image source={{ uri: bar.photoUrl }} style={styles.image} />}
-  </View>
-);
+export default function BarCard({ bar }: BarCardProps) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.name}>{bar.name}</Text>
+      <Text style={styles.info}>Horaires : {bar.openingHours}</Text>
+      <Text style={styles.info}>Prix bière : {bar.beerPrice}</Text>
+      {bar.photoUrl ? (
+        <Image source={{ uri: bar.photoUrl }} style={styles.image} />
+      ) : null}
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   card: {
-    padding: 10,
+    backgroundColor: 'white',
     borderRadius: 8,
-    backgroundColor: '#fff',
-    marginBottom: 10,
+    padding: 12,
+    marginVertical: 8,
+    marginHorizontal: 16,
+    elevation: 2,
   },
   name: {
-    fontWeight: 'bold',
     fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 6,
+  },
+  info: {
+    fontSize: 14,
+    marginBottom: 4,
   },
   image: {
     width: '100%',
-    height: 100,
-    borderRadius: 8,
-    marginTop: 10,
+    height: 120,
+    borderRadius: 6,
+    marginTop: 8,
   },
 });
-
-export default BarCard;

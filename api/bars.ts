@@ -1,6 +1,6 @@
 // api/bars.ts
 export type Bar = {
-    id: string;
+    id: number;
     name: string;
     latitude: number;
     longitude: number;
@@ -13,46 +13,58 @@ export type Bar = {
     latitude: number,
     longitude: number,
     latitudeDelta: number,
-    longitudeDelta: number
+    longitudeDelta: number,
+    signal?: AbortSignal
   ): Promise<Bar[]> {
-    // build the bounding‐box from the region
-    const south = latitude - latitudeDelta / 2;
-    const north = latitude + latitudeDelta / 2;
-    const west  = longitude - longitudeDelta / 2;
-    const east  = longitude + longitudeDelta / 2;
+    // Ignore overly zoomed-out regions
+    const MAX_DELTA = 0.1;
+    if (latitudeDelta > MAX_DELTA || longitudeDelta > MAX_DELTA) {
+      console.warn('Zoom level too low — skipping fetch.');
+      return [];
+    }
   
     const query = `
       [out:json][timeout:25];
-      node["amenity"="bar"](${south},${west},${north},${east});
+      (
+        node["amenity"="bar"]
+          (${latitude - latitudeDelta},${longitude - longitudeDelta},
+           ${latitude + latitudeDelta},${longitude + longitudeDelta});
+      );
       out body;
     `;
   
-    // send as POST
-    const response = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'data=' + encodeURIComponent(query),
-    });
+    const url = 'https://overpass-api.de/api/interpreter';
   
-    const text = await response.text();
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        body: query,
+        signal,
+      });
   
-    // quick check: if it starts with '<', it’s HTML—throw so you can see it
-    if (text.trim().startsWith('<')) {
-      console.error('Overpass HTML error response:', text);
-      throw new Error('Overpass API returned HTML instead of JSON');
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+  
+      const json = await response.json();
+  
+      return json.elements
+        .filter((el: any) => el.lat && el.lon)
+        .map((el: any) => ({
+          id: el.id,
+          name: el.tags?.name || 'Unnamed Bar',
+          latitude: el.lat,
+          longitude: el.lon,
+          openingHours: el.tags?.opening_hours || 'Unknown',
+          beerPrice: el.tags?.['drink:beer'] || 'Unknown',
+        }));
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.log('Fetch aborted.');
+      } else {
+        console.error('Error fetching bars:', error.message);
+      }
+      return [];
     }
-  
-    // now safely parse JSON
-    const json = JSON.parse(text);
-  
-    return json.elements.map((el: any) => ({
-      id: el.id.toString(),
-      name: el.tags.name || 'Unnamed Bar',
-      latitude: el.lat,
-      longitude: el.lon,
-      openingHours: el.tags.opening_hours || 'Not available',
-      beerPrice: el.tags.beer_price || 'Not available',
-      photoUrl: el.tags.image || undefined,
-    }));
   }
   
